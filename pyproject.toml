@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gradio-ai-agent"
+version = "0.1.0"
+description = "Gradio UI for a simple AI agent with tool-calling"
+requires-python = ">=3.10"
+dependencies = [
+  "gradio>=4.42.0",
+  "python-dotenv>=1.0.0"
+  # Optional if you add Azure/OpenAI later:
+  # , "openai>=1.40.0"
+]
+
+[tool.setuptools]
+packages = ["src"]
+package-dir = {"" = "."}

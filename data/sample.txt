@@ -1,0 +1,2 @@
+This is a sample text file for the Gradio AI agent demo. It mentions Gradio, Python, and simple RAG.
+You can ask: "from file data: what topics are mentioned?" to see a snippet.

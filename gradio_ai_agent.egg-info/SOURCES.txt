@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+./src/__init__.py
+./src/agent_gradio.py
+gradio_ai_agent.egg-info/PKG-INFO
+gradio_ai_agent.egg-info/SOURCES.txt
+gradio_ai_agent.egg-info/dependency_links.txt
+gradio_ai_agent.egg-info/requires.txt
+gradio_ai_agent.egg-info/top_level.txt
