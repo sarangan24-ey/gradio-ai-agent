@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 import gradio as gr
 from openai import OpenAI
+from tavily import TavilyClient
 
 # ----------------------------
 # Config
@@ -15,11 +16,15 @@ DATA_DIR = os.path.join(os.getcwd(), "data")
 PROVIDER = os.getenv("PROVIDER", "local").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 if PROVIDER == "openai" and not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable is required when PROVIDER=openai")
+    raise ValueError(
+        "OPENAI_API_KEY environment variable is required when PROVIDER=openai"
+    )
 
 client = OpenAI(api_key=OPENAI_API_KEY) if PROVIDER == "openai" else None
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
 
 SYSTEM_PROMPT = (
     "You are a helpful AI agent. Prefer calling tools when they improve accuracy. "
@@ -45,12 +50,37 @@ def calculator(expr: str) -> Dict[str, Any]:
 
 def web_search(query: str, top_k: int = 3) -> Dict[str, Any]:
     """
-    Stubbed web search. In production, integrate Bing or enterprise search.
+    Web search using Tavily API. Falls back to stub if API key not provided.
     """
-    results = [
-        f"https://example.com/search?q={query}&rank={i}" for i in range(1, top_k + 1)
-    ]
-    return {"results": results}
+    if not tavily_client:
+        # Fallback to stub results
+        results = [
+            f"https://example.com/search?q={query}&rank={i}"
+            for i in range(1, top_k + 1)
+        ]
+        return {"results": results, "source": "stub"}
+
+    try:
+        response = tavily_client.search(
+            query=query, max_results=top_k, include_answer=True
+        )
+        results = []
+        for result in response.get("results", []):
+            results.append(
+                {
+                    "title": result.get("title", ""),
+                    "url": result.get("url", ""),
+                    "snippet": result.get("snippet", ""),
+                    "source": "tavily",
+                }
+            )
+        return {
+            "results": results,
+            "answer": response.get("answer", ""),
+            "source": "tavily",
+        }
+    except Exception as e:
+        return {"error": f"Tavily search failed: {str(e)}", "source": "tavily"}
 
 
 def _load_text_files() -> List[Tuple[str, str]]:
@@ -107,7 +137,10 @@ def get_openai_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "expr": {"type": "string", "description": "Math expression to evaluate"}
+                        "expr": {
+                            "type": "string",
+                            "description": "Math expression to evaluate",
+                        }
                     },
                     "required": ["expr"],
                 },
@@ -140,7 +173,10 @@ def get_openai_tools():
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "question": {"type": "string", "description": "Question to search files for"},
+                        "question": {
+                            "type": "string",
+                            "description": "Question to search files for",
+                        },
                         "top_k": {
                             "type": "integer",
                             "description": "Number of results to return",
@@ -152,6 +188,7 @@ def get_openai_tools():
             },
         },
     ]
+
 
 # ----------------------------
 # Simple local planner
@@ -203,7 +240,9 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"{name} failed: {e}"}
 
 
-def run_agent_openai(user_text: str, history: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+def run_agent_openai(
+    user_text: str, history: List[Dict[str, str]] | None = None
+) -> Dict[str, Any]:
     """Run agent using OpenAI API with function calling."""
     history = history or []
     messages = [{"role": "user", "content": user_text}]
@@ -221,25 +260,31 @@ def run_agent_openai(user_text: str, history: List[Dict[str, str]] | None = None
         # Process tool calls if any
         while response.choices[0].message.tool_calls:
             tool_calls = response.choices[0].message.tool_calls
-            
+
             for tool_call in tool_calls:
                 name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
                 output = execute_tool(name, arguments)
-                executed.append({"name": name, "arguments": arguments, "output": output})
-            
+                executed.append(
+                    {"name": name, "arguments": arguments, "output": output}
+                )
+
             # Add assistant response and tool results to messages for next iteration
             messages.append(response.choices[0].message)
             for tool_call in tool_calls:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(execute_tool(
-                        tool_call.function.name,
-                        json.loads(tool_call.function.arguments)
-                    )),
-                })
-            
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(
+                            execute_tool(
+                                tool_call.function.name,
+                                json.loads(tool_call.function.arguments),
+                            )
+                        ),
+                    }
+                )
+
             # Get next response
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
