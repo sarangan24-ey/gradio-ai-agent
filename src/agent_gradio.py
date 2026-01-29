@@ -1,4 +1,7 @@
 import os
+import certifi
+
+os.environ["SSL_CERT_FILE"] = certifi.where()
 import re
 import json
 from typing import Dict, Any, List, Tuple
@@ -6,12 +9,14 @@ from dotenv import load_dotenv
 
 import gradio as gr
 from openai import OpenAI
+from openai.types.chat import ChatCompletionToolParam
 from tavily import TavilyClient
 
 # ----------------------------
 # Config
 # ----------------------------
-load_dotenv()
+# load_dotenv()
+load_dotenv(".env.local", override=True)
 DATA_DIR = os.path.join(os.getcwd(), "data")
 PROVIDER = os.getenv("PROVIDER", "local").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -126,7 +131,7 @@ TOOL_REGISTRY = {
 }
 
 
-def get_openai_tools():
+def get_openai_tools() -> list[ChatCompletionToolParam]:
     """Convert tool registry to OpenAI function calling format."""
     return [
         {
@@ -298,6 +303,7 @@ def run_agent_openai(
         return {"reply": reply, "tool_calls": executed, "provider": "openai"}
 
     except Exception as e:
+        print(e)
         return {
             "reply": f"Error with OpenAI API: {str(e)}",
             "tool_calls": executed,
