@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Tuple
 from dotenv import load_dotenv
 
 import gradio as gr
+from openai import OpenAI
 
 # ----------------------------
 # Config
@@ -12,6 +13,13 @@ import gradio as gr
 load_dotenv()
 DATA_DIR = os.path.join(os.getcwd(), "data")
 PROVIDER = os.getenv("PROVIDER", "local").lower()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+if PROVIDER == "openai" and not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is required when PROVIDER=openai")
+
+client = OpenAI(api_key=OPENAI_API_KEY) if PROVIDER == "openai" else None
 
 SYSTEM_PROMPT = (
     "You are a helpful AI agent. Prefer calling tools when they improve accuracy. "
@@ -87,6 +95,64 @@ TOOL_REGISTRY = {
     "file_rag": {"fn": file_rag, "signature": {"question": str, "top_k": int}},
 }
 
+
+def get_openai_tools():
+    """Convert tool registry to OpenAI function calling format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "calculator",
+                "description": "Evaluate a simple math expression safely.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "expr": {"type": "string", "description": "Math expression to evaluate"}
+                    },
+                    "required": ["expr"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of results to return",
+                            "default": 3,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_rag",
+                "description": "Search local files for relevant information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "Question to search files for"},
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of results to return",
+                            "default": 3,
+                        },
+                    },
+                    "required": ["question"],
+                },
+            },
+        },
+    ]
+
 # ----------------------------
 # Simple local planner
 # ----------------------------
@@ -124,33 +190,87 @@ def plan_tool_calls(user_text: str) -> List[Dict[str, Any]]:
 # ----------------------------
 
 
-def run_agent(
+def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a tool by name with given arguments."""
+    fn = TOOL_REGISTRY.get(name, {}).get("fn")
+    if fn is None:
+        return {"error": f"Unknown tool: {name}"}
+    try:
+        return fn(**arguments)
+    except TypeError as te:
+        return {"error": f"Bad arguments for {name}: {te}"}
+    except Exception as e:
+        return {"error": f"{name} failed: {e}"}
+
+
+def run_agent_openai(user_text: str, history: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+    """Run agent using OpenAI API with function calling."""
+    history = history or []
+    messages = [{"role": "user", "content": user_text}]
+    executed = []
+
+    try:
+        # Call OpenAI with tools
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            tools=get_openai_tools(),
+            tool_choice="auto",
+        )
+
+        # Process tool calls if any
+        while response.choices[0].message.tool_calls:
+            tool_calls = response.choices[0].message.tool_calls
+            
+            for tool_call in tool_calls:
+                name = tool_call.function.name
+                arguments = json.loads(tool_call.function.arguments)
+                output = execute_tool(name, arguments)
+                executed.append({"name": name, "arguments": arguments, "output": output})
+            
+            # Add assistant response and tool results to messages for next iteration
+            messages.append(response.choices[0].message)
+            for tool_call in tool_calls:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(execute_tool(
+                        tool_call.function.name,
+                        json.loads(tool_call.function.arguments)
+                    )),
+                })
+            
+            # Get next response
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=get_openai_tools(),
+                tool_choice="auto",
+            )
+
+        # Extract final reply
+        reply = response.choices[0].message.content or "No response generated."
+        return {"reply": reply, "tool_calls": executed, "provider": "openai"}
+
+    except Exception as e:
+        return {
+            "reply": f"Error with OpenAI API: {str(e)}",
+            "tool_calls": executed,
+            "provider": "openai",
+        }
+
+
+def run_agent_local(
     user_text: str, history: List[Dict[str, str]] | None = None
 ) -> Dict[str, Any]:
-    """
-    Returns a dict suitable for Gradio:
-    {
-      "reply": str,
-      "tool_calls": [{name, arguments, output}],
-      "provider": "local"
-    }
-    """
+    """Run agent using local heuristics (original implementation)."""
     history = history or []
     executed = []
     for call in plan_tool_calls(user_text):
         name = call["name"]
         args = call["arguments"]
-        fn = TOOL_REGISTRY.get(name, {}).get("fn")
-        if fn is None:
-            out = {"error": f"Unknown tool: {name}"}
-        else:
-            try:
-                out = fn(**args)
-            except TypeError as te:
-                out = {"error": f"Bad arguments for {name}: {te}"}
-            except Exception as e:
-                out = {"error": f"{name} failed: {e}"}
-        executed.append({"name": name, "arguments": args, "output": out})
+        output = execute_tool(name, args)
+        executed.append({"name": name, "arguments": args, "output": output})
 
     # Compose a reply for the chat
     reply_lines = [f"**You asked:** {user_text}"]
@@ -163,6 +283,16 @@ def run_agent(
             "No tools were needed. Try arithmetic, 'search …', or mention 'file/data'."
         )
     return {"reply": "".join(reply_lines), "tool_calls": executed, "provider": "local"}
+
+
+def run_agent(
+    user_text: str, history: List[Dict[str, str]] | None = None
+) -> Dict[str, Any]:
+    """Route to appropriate agent implementation based on PROVIDER."""
+    if PROVIDER == "openai":
+        return run_agent_openai(user_text, history)
+    else:
+        return run_agent_local(user_text, history)
 
 
 # ----------------------------

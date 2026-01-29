@@ -9,9 +9,8 @@ description = "Gradio UI for a simple AI agent with tool-calling"
 requires-python = ">=3.10"
 dependencies = [
   "gradio>=4.42.0",
-  "python-dotenv>=1.0.0"
-  # Optional if you add Azure/OpenAI later:
-  # , "openai>=1.40.0"
+  "python-dotenv>=1.0.0",
+  "openai>=1.40.0"
 ]
 
 [tool.setuptools]
